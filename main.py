@@ -1,13 +1,17 @@
 """Entry point for the Options Pricing Engine.
 
-The script supports two modes:
+The script supports three modes:
 
-1. **Demo mode** (no arguments) — runs the original static BSM + Monte
-   Carlo demo on a hard-coded set of textbook inputs.
+1. **Demo mode** (no arguments) — runs the static BSM + Monte Carlo
+   comparison on textbook inputs, including a side-by-side Python-MC vs
+   C++-MC row when the ``quant_engine_cpp`` extension is built.
 2. **Live mode** (``--ticker AAPL`` or interactive prompt) — fetches the
    spot price and historical volatility for a real ticker via
    :mod:`src.market_data`, then prices a 1-month At-The-Money European
    call with the analytical :class:`EuropeanOption`.
+3. **C++ silent fallback** — if the ``quant_engine_cpp`` extension has
+   not been built (no MSVC, no ``pip install pybind11``, etc.) the
+   engine is silently skipped and the demo behaves exactly as in Phase 3.
 
 Usage examples
 --------------
@@ -28,11 +32,34 @@ Override the risk-free rate and maturity::
 from __future__ import annotations
 
 import argparse
+import pathlib
 import sys
+import time
 
 from src.black_scholes import EuropeanOption
 from src.market_data import get_market_inputs
 from src.monte_carlo import MonteCarloPricer
+
+
+# ---------------------------------------------------------------------- #
+# Feature flag: try to import the C++ engine. If the .pyd is not built
+# (e.g. on a machine without MSVC), we silently fall back to Python MC.
+# ---------------------------------------------------------------------- #
+def _try_import_cpp_engine() -> object | None:
+    """Try to import the C++ extension; return the module or ``None``."""
+    cpp_dir = pathlib.Path(__file__).parent / "cpp_core"
+    if not cpp_dir.exists():
+        return None
+    sys.path.insert(0, str(cpp_dir))
+    try:
+        import quant_engine_cpp  # type: ignore[import-not-found]
+        return quant_engine_cpp
+    except Exception:
+        return None
+
+
+quant_engine_cpp = _try_import_cpp_engine()
+HAS_CPP: bool = quant_engine_cpp is not None
 
 
 # ---------------------------------------------------------------------- #
@@ -56,7 +83,7 @@ def price_option_analytical(option_type: str) -> EuropeanOption:
 
 
 def build_mc_pricer() -> MonteCarloPricer:
-    """Build a single MC pricer that will price both call and put."""
+    """Build a single Python MC pricer that will price both call and put."""
     return MonteCarloPricer(
         S=S, K=K, T=T, r=R, sigma=SIGMA,
         n_paths=MC_PATHS, n_steps=MC_STEPS,
@@ -74,10 +101,14 @@ def print_greeks(option: EuropeanOption) -> None:
     print(f"  Rho   : {g['rho']:>10.4f}   (per 1.00 = 100% change in r)")
 
 
-def fmt_mc(price: float, std_err: float) -> str:
+def fmt_mc(price: float, std_err: float, t_ms: float | None = None) -> str:
     """Format a Monte Carlo estimate with its 95% confidence interval."""
     half = 1.96 * std_err
-    return f"{price:>8.4f}  (SE={std_err:.4f}, 95% CI=[{price - half:.4f}, {price + half:.4f}])"
+    timing = f", t={t_ms:6.1f}ms" if t_ms is not None else ""
+    return (
+        f"{price:>8.4f}  (SE={std_err:.4f}, "
+        f"95% CI=[{price - half:.4f}, {price + half:.4f}]{timing})"
+    )
 
 
 def run_static_demo() -> None:
@@ -87,38 +118,79 @@ def run_static_demo() -> None:
     call_bsm: float = call_analytical.price()
     put_bsm: float = put_analytical.price()
 
-    mc = build_mc_pricer()
-    mc_prices = mc.price_both()
-    call_mc: float = mc_prices["call"]
-    put_mc: float = mc_prices["put"]
-    call_mc_se: float = mc.std_error()
-    put_mc_se: float = mc.std_error()
+    # --- Python MC -----------------------------------------------------------
+    py_mc = build_mc_pricer()
+    t0 = time.perf_counter()
+    py_prices = py_mc.price_both()
+    py_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    py_call: float = py_prices["call"]
+    py_put: float = py_prices["put"]
+    py_se: float = py_mc.std_error()
 
-    print("Black-Scholes-Merton vs. Monte Carlo")
-    print("=" * 60)
+    # --- C++ MC (if available) -----------------------------------------------
+    cpp_call: float | None = None
+    cpp_put: float | None = None
+    cpp_se: float | None = None
+    cpp_threads: int = 0
+    cpp_elapsed_ms: float = 0.0
+    if HAS_CPP:
+        assert quant_engine_cpp is not None
+        cpp = quant_engine_cpp.MonteCarloPricerCpp(  # type: ignore[attr-defined]
+            S, K, T, R, SIGMA,
+            MC_PATHS, MC_STEPS, "call", MC_SEED, MC_ANTITHETIC, 0,
+        )
+        t0 = time.perf_counter()
+        cpp_call, cpp_se, _ci_lo, _ci_hi = cpp.price()
+        cpp_elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        cpp_threads = cpp.threads_used()
+        # Use a separate instance for the put so the seeds are identical
+        # in spirit (same seed, same path count, same antithetic).
+        cpp_put_obj = quant_engine_cpp.MonteCarloPricerCpp(  # type: ignore[attr-defined]
+            S, K, T, R, SIGMA,
+            MC_PATHS, MC_STEPS, "put", MC_SEED, MC_ANTITHETIC, 0,
+        )
+        cpp_put, _se2, _, _ = cpp_put_obj.price()
+
+    # --- Pretty print --------------------------------------------------------
+    print("Black-Scholes-Merton vs. Monte Carlo (Python + C++)")
+    print("=" * 70)
     print(
         f"Inputs : S={S}, K={K}, T={T}, r={R}, sigma={SIGMA}\n"
         f"  MC   : {MC_PATHS:,} paths, {MC_STEPS} step(s), "
-        f"seed={MC_SEED}, antithetic={MC_ANTITHETIC}"
+        f"seed={MC_SEED}, antithetic={MC_ANTITHETIC}\n"
+        f"  C++   : {'available' if HAS_CPP else 'NOT built (falling back to Python MC only)'}"
     )
     print()
     print("Prices")
-    print("-" * 60)
+    print("-" * 70)
     print(f"  BSM (analytical)  Call = {call_bsm:>8.4f}    Put = {put_bsm:>8.4f}")
-    print(f"  MC   (estimated)  Call = {fmt_mc(call_mc, call_mc_se)}")
-    print(f"                     Put  = {fmt_mc(put_mc,  put_mc_se)}")
+    print(f"  MC   (Python)     Call = {fmt_mc(py_call, py_se, py_elapsed_ms)}")
+    print(f"                     Put  = {fmt_mc(py_put,  py_se)}")
+    if HAS_CPP and cpp_call is not None and cpp_put is not None:
+        print(
+            f"  MC   (C++, {cpp_threads:>2} thr) Call = "
+            f"{fmt_mc(cpp_call, cpp_se or 0.0, cpp_elapsed_ms)}"
+        )
+        print(
+            f"                     Put  = {fmt_mc(cpp_put, cpp_se or 0.0)}"
+        )
     print()
-    rel_call = (call_mc - call_bsm) / call_bsm * 100.0
-    rel_put = (put_mc - put_bsm) / put_bsm * 100.0
-    print(f"  MC vs. BSM error  Call = {rel_call:+7.3f}%    Put = {rel_put:+7.3f}%")
+    rel_py = (py_call - call_bsm) / call_bsm * 100.0
+    print(f"  MC vs. BSM error  Call = {rel_py:+7.3f}% (Python MC)")
+    if HAS_CPP and cpp_call is not None:
+        rel_cpp = (cpp_call - call_bsm) / call_bsm * 100.0
+        print(f"                     Call = {rel_cpp:+7.3f}% (C++ MC)")
+        if py_elapsed_ms > 0 and cpp_elapsed_ms > 0:
+            speedup = py_elapsed_ms / cpp_elapsed_ms
+            print(f"  C++ speedup       : {speedup:>5.2f}× (Python {py_elapsed_ms:.0f}ms / C++ {cpp_elapsed_ms:.0f}ms)")
 
     print()
     print("Call Greeks (BSM analytical)")
-    print("-" * 60)
+    print("-" * 70)
     print_greeks(call_analytical)
     print()
     print("Put Greeks (BSM analytical)")
-    print("-" * 60)
+    print("-" * 70)
     print_greeks(put_analytical)
 
 

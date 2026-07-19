@@ -1,0 +1,7 @@
+# ----- C++ build artifacts --------------------------------------------------
+cpp_core/build/
+cpp_core/*.pyd
+cpp_core/*.so
+cpp_core/*.dylib
+cpp_core/CMakeCache.txt
+cpp_core/CMakeFiles/

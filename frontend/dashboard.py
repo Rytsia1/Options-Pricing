@@ -84,7 +84,8 @@ def post_price(
     requests.RequestException
         For connection / timeout errors.
     """
-    resp = requests.post(API_URL, json=payload, timeout=timeout)
+    headers = {"User-Agent": "options-pricing-dashboard/1.0 (+streamlit)"}
+    resp = requests.post(API_URL, json=payload, headers=headers, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
@@ -146,7 +147,10 @@ with st.sidebar:
             max_value=1_000_000,
             value=100_000,
             step=10_000,
-            help="More paths = tighter confidence interval, slower run.",
+            help=(
+                "More paths = tighter confidence interval, slower run. "
+                "Backend caps this at [10,000, 1,000,000] to prevent abuse."
+            ),
         )
 
         submitted = st.form_submit_button(
@@ -337,3 +341,41 @@ except Exception as exc:  # pragma: no cover — defensive UI fallback
 # ---------------------------------------------------------------------- #
 with st.expander("🛠️ Raw backend response"):
     st.json({"auto_engine": cpp_result, "python_forced": py_result})
+
+with st.expander("🔍 Outgoing request payload (debug)"):
+    st.caption(
+        "Exact JSON body POSTed to the backend. If you ever see a "
+        "4xx error, this is the first place to look."
+    )
+    st.json({
+        "force_engine='auto'":  payload_cpp,
+        "force_engine='python'": payload_py,
+    })
+
+
+# ---------------------------------------------------------------------- #
+# Troubleshooting cheatsheet
+# ---------------------------------------------------------------------- #
+with st.expander("❓ Troubleshooting"):
+    st.markdown(
+        """
+**HTTP 400 from the backend** — the request body parsed successfully
+(FastAPI returns 422 for shape errors). A 400 is raised by the
+backend when Yahoo Finance can't resolve the ticker (typo, delisted
+symbol, index not covered, rate-limited). Try a different ticker
+(e.g. `AAPL`, `MSFT`, `^GSPC`).
+
+**HTTP 422 from the backend** — a field is missing or has the wrong
+type. Inspect the payload in the expander above and compare it to the
+backend's `PricingRequest` model in `src/api.py`.
+
+**Connection error** — the dashboard can't reach `API_URL`. If you're
+running outside Docker Compose, set the `API_URL` env var, e.g.
+`API_URL=http://localhost:8000/api/v1/price`.
+
+**Streamlit page won't load** — the WebSocket handshake was blocked.
+The `frontend/Dockerfile` already disables CORS and XSRF; if you're
+running Streamlit outside of Docker, add the same flags to the
+`streamlit run` command.
+"""
+    )

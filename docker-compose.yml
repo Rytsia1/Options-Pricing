@@ -1,35 +1,71 @@
 # =============================================================================
-#  Options Pricing Engine — Docker Compose definition
+#  Options Pricing Engine — Docker Compose definition (2-service microservices)
 #
-#  Single-service definition. The C++ `quant_engine_cpp` extension is compiled
-#  during the image build (see `Dockerfile`), so a plain
+#  This file brings up the entire stack with a single command:
 #
 #      docker compose up --build
 #
-#  is enough to get a fully self-contained API running on port 8000 — no
-#  MSVC, no CMake, no pybind11 install required on the host.
+#  Services
+#  --------
+#  - backend  : FastAPI + C++/pybind11 Monte-Carlo engine (port 8000)
+#  - frontend : Streamlit dashboard (port 8501)
+#
+#  The two services share Docker's default bridge network; the frontend
+#  reaches the backend via the service name `backend` (Docker's internal
+#  DNS resolves service names to container IPs on the same network).
 # =============================================================================
 
 services:
-  api:
-    # When you change this name, also update it in the "container_name" line
-    # below (and any external tooling that references it).
-    container_name: options-pricing-api
+  # ---------------------------------------------------------------- #
+  #  Backend — FastAPI + C++/pybind11 Monte-Carlo engine
+  # ---------------------------------------------------------------- #
+  backend:
+    container_name: options-pricing-backend
 
-    # Build the image from the Dockerfile in the current directory.
+    # Build the backend image from the root Dockerfile (which compiles
+    # the C++ extension inside the image).
     build:
       context: .
       dockerfile: Dockerfile
 
-    # Bind the container's port 8000 to the host's 8000, so the FastAPI
-    # service is reachable at http://localhost:8000.
     ports:
       - "8000:8000"
 
-    # Auto-restart unless you explicitly stopped the container.
     restart: unless-stopped
 
-    # No volumes: the compiled `quant_engine_cpp*.so` lives inside the
-    # image (in /app/cpp_core), and binding the host source tree on top
-    # would shadow it. If you want live code reload, run uvicorn with
-    # `--reload` outside of Docker instead.
+    # No bind mounts: the compiled `quant_engine_cpp*.so` lives inside
+    # the image (in /app/cpp_core), and binding the host source tree
+    # on top would shadow it.
+
+  # ---------------------------------------------------------------- #
+  #  Frontend — Streamlit dashboard
+  # ---------------------------------------------------------------- #
+  frontend:
+    container_name: options-pricing-frontend
+
+    # Build the frontend image from the dedicated frontend/Dockerfile
+    # (slim — no C++ toolchain, no FastAPI, just streamlit + yfinance).
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+
+    ports:
+      - "8501:8501"
+
+    # Pass the API URL into the dashboard. The host name `backend` is
+    # resolved by Docker's internal DNS to the backend service above.
+    # The dashboard also has this same value as a hardcoded default, so
+    # this is just being explicit.
+    environment:
+      - API_URL=http://backend:8000/api/v1/price
+      - API_HEALTH_URL=http://backend:8000/
+
+    # Streamlit waits for the backend container to *start* before booting.
+    # This is not a "ready" check — for that you'd add a healthcheck
+    # on the backend and use `depends_on: { backend: { condition:
+    # service_healthy }}`. The Streamlit health badge in the sidebar
+    # handles the "actually reachable" check at request time.
+    depends_on:
+      - backend
+
+    restart: unless-stopped

@@ -1,0 +1,13 @@
+# =============================================================================
+#  Frontend-only Python dependencies for the Streamlit dashboard.
+#
+#  Kept intentionally separate from the root requirements.txt so the
+#  frontend Docker image never carries the C++ toolchain, pybind11, or
+#  the FastAPI stack. The dashboard only consumes the backend over HTTP
+#  and fetches market data from Yahoo Finance directly.
+# =============================================================================
+
+streamlit>=1.36
+requests>=2.31
+yfinance>=0.2.40
+pandas>=2.0

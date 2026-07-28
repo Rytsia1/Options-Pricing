@@ -25,10 +25,32 @@ A Python-based quantitative finance repository designed to model, analyze, and c
 
 ## 🐳 Running with Docker
 
-The project ships with a `Dockerfile` and a `docker-compose.yml` so the
-whole engine — **including the C++ `quant_engine_cpp` extension** — can
-be built and run with a single command, without installing MSVC, CMake,
-or any C++ toolchain on the host.
+The project ships with two Dockerfiles and a `docker-compose.yml` so the
+whole stack — **FastAPI backend (with the C++ `quant_engine_cpp` engine
+compiled inside the image) + Streamlit dashboard** — can be built and
+run with a single command, without installing MSVC, CMake, or any C++
+toolchain on the host.
+
+### Architecture
+
+```
+┌────────────────────────┐    HTTP POST /api/v1/price    ┌──────────────────────┐
+│  Streamlit dashboard   │ ───────────────────────────▶  │  FastAPI backend     │
+│  (frontend service)    │                              │  (backend service)   │
+│  port 8501             │ ◀───── yfinance (each) ───── │  port 8000           │
+│  /app/frontend/        │                              │  C++ engine inside   │
+└────────────────────────┘                              └──────────────────────┘
+       │                                                       │
+       └───────── Docker default network (internal DNS) ───────┘
+                  frontend reaches backend as `http://backend:8000`
+```
+
+### Services
+
+| Service   | Container name              | Port (host → container) | URL (from your browser)        | Role                                            |
+| --------- | --------------------------- | ----------------------- | ------------------------------ | ----------------------------------------------- |
+| `backend` | `options-pricing-backend`   | `8000 → 8000`           | <http://localhost:8000/docs>   | FastAPI + C++/pybind11 Monte-Carlo engine       |
+| `frontend`| `options-pricing-frontend`  | `8501 → 8501`           | <http://localhost:8501>        | Streamlit dashboard (calls the backend)         |
 
 ### Prerequisites
 
@@ -36,9 +58,9 @@ or any C++ toolchain on the host.
   Docker Engine + the `docker compose` plugin on Linux.
 
 That's it. Everything else (Python 3.12, `build-essential`, `cmake`,
-`pybind11`, FastAPI, Uvicorn, NumPy, yfinance, …) is installed *inside*
-the image during the build step, and the C++ Monte-Carlo engine is
-compiled at the same time.
+`pybind11`, FastAPI, Uvicorn, NumPy, yfinance, Streamlit, …) is
+installed *inside* the images during the build step, and the C++
+Monte-Carlo engine is compiled at the same time.
 
 ### Build & run
 
@@ -52,37 +74,34 @@ docker compose up --build
 docker-compose up --build
 ```
 
-The first build takes ~30–60s (mostly the C++ compile). Subsequent
-builds are cached and only re-run the steps that actually changed —
-editing only `bsm_engine.cpp` will typically re-trigger just the
-`cmake --build` step.
+The first build takes ~30–60s (mostly the C++ compile inside the
+backend image). Subsequent builds are cached and only re-run the steps
+that actually changed — editing only `bsm_engine.cpp` will typically
+re-trigger just the `cmake --build` step.
 
-Once the container prints something like
+Once both containers are up:
 
-```
-INFO:     Started server process [1]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
-INFO:     Uvicorn running on http://0.0.0.0:8000
-```
-
-the API is live on `http://localhost:8000`.
+* **Dashboard**: <http://localhost:8501>
+* **Backend Swagger UI**: <http://localhost:8000/docs>
+* **Backend health**: <http://localhost:8000/> (returns JSON with the active engine)
 
 ### Quick smoke test
 
 ```bash
 # Health check — should report engine: "C++" because the extension
-# was compiled inside the image.
+# was compiled inside the backend image.
 curl http://localhost:8000/
 
 # Price a 3-month ATM call on Apple (defaults to a ~5% risk-free rate).
 curl -X POST http://localhost:8000/api/v1/price \
      -H "Content-Type: application/json" \
      -d '{"ticker":"AAPL","strike_price":190.0,"time_to_maturity":0.25}'
-```
 
-Interactive Swagger UI is also available at
-<http://localhost:8000/docs>.
+# The same request from the dashboard: open http://localhost:8501,
+# fill the sidebar, click "Price Option". You'll see call/put prices,
+# a C++ vs Python execution-time comparison, a 1-year price chart,
+# and a put-call parity check.
+```
 
 ### Useful commands
 
@@ -90,38 +109,43 @@ Interactive Swagger UI is also available at
 # Run in the background (detached mode)
 docker compose up --build -d
 
-# Tail the API logs
-docker compose logs -f api
+# Tail logs for a specific service
+docker compose logs -f backend
+docker compose logs -f frontend
 
-# Stop the service
+# Stop the whole stack
 docker compose down
 
 # Force a clean rebuild of the C++ extension after editing bsm_engine.cpp
-docker compose build --no-cache
+docker compose build --no-cache backend
 ```
 
 ### Rebuilding after editing the C++ source
 
-The compiled `quant_engine_cpp*.so` lives **inside** the image, not on a
-bind mount, so any change to `cpp_core/bsm_engine.cpp` (or to
-`cpp_core/CMakeLists.txt`) requires rebuilding the image:
+The compiled `quant_engine_cpp*.so` lives **inside** the backend image,
+not on a bind mount, so any change to `cpp_core/bsm_engine.cpp` (or to
+`cpp_core/CMakeLists.txt`) requires rebuilding just the backend:
 
 ```bash
-docker compose build         # incremental — only rebuilds the cmake step
+docker compose build backend     # incremental — only rebuilds the cmake step
 # or, if you want a fully clean rebuild:
-docker compose build --no-cache
+docker compose build --no-cache backend
 docker compose up
 ```
 
+The frontend image is unaffected by C++ changes, so you don't have to
+rebuild it.
+
 ### Image layout (for reference)
 
-| Path inside the image          | Purpose                                  |
-| ------------------------------ | ---------------------------------------- |
-| `/app`                         | `WORKDIR`; project root                  |
-| `/app/src/api.py`              | FastAPI application entry point          |
-| `/app/cpp_core/bsm_engine.cpp` | C++17 source for the Monte-Carlo engine  |
-| `/app/cpp_core/quant_engine_cpp*.so` | Compiled pybind11 module (built during image build) |
-| `/app/requirements.txt`        | Python dependencies installed via `pip`   |
+| Image                 | Path inside the image                       | Purpose                                       |
+| --------------------- | ------------------------------------------- | --------------------------------------------- |
+| `options-pricing-backend`  | `/app`                                  | `WORKDIR`; project root (backend)             |
+| `options-pricing-backend`  | `/app/src/api.py`                       | FastAPI application entry point               |
+| `options-pricing-backend`  | `/app/cpp_core/bsm_engine.cpp`          | C++17 source for the Monte-Carlo engine       |
+| `options-pricing-backend`  | `/app/cpp_core/quant_engine_cpp*.so`    | Compiled pybind11 module (built during image build) |
+| `options-pricing-frontend` | `/app/dashboard.py`                    | Streamlit application entry point             |
+| `options-pricing-frontend` | `/app/requirements.txt`                | Python dependencies installed via `pip` (frontend only) |
 
 If you'd rather not use Docker, the host-side build instructions for
 Windows + MSVC are in [`cpp_core/build_instructions.md`](cpp_core/build_instructions.md).

@@ -46,6 +46,12 @@ MC_SEED: int = 2026
 MC_ANTITHETIC: bool = True
 MC_CPP_THREADS: int = 0  # 0 → let the C++ engine pick (hardware_concurrency)
 
+# Bounds for the optional `n_paths` override on PricingRequest. These
+# prevent a malicious or accidental request from asking for a billion
+# Monte-Carlo paths and DoS'ing the backend.
+MIN_N_PATHS: int = 10_000
+MAX_N_PATHS: int = 1_000_000
+
 
 # ---------------------------------------------------------------------- #
 # Optional C++ engine loader (mirrors the logic in main.py / tests).
@@ -89,6 +95,16 @@ class PricingRequest(BaseModel):
     risk_free_rate : float, optional
         Continuously-compounded risk-free rate. Defaults to ``0.05``
         (≈ 5%).
+    n_paths : int, optional
+        Number of Monte-Carlo paths to simulate. If ``None`` (the default)
+        the server uses its built-in :data:`MC_N_PATHS` constant. Bounded
+        by :data:`MIN_N_PATHS` and :data:`MAX_N_PATHS` to prevent abuse.
+    force_engine : {"auto", "python"}, optional
+        Engine selection override. ``"auto"`` (the default) uses the C++
+        engine if it was successfully loaded at import time, otherwise
+        falls back to pure Python. ``"python"`` *forces* the pure-Python
+        path even when the C++ engine is available — used by the
+        Streamlit dashboard to show a C++ vs Python timing comparison.
     """
 
     ticker: str = Field(min_length=1, max_length=10)
@@ -97,6 +113,22 @@ class PricingRequest(BaseModel):
     risk_free_rate: float = Field(
         default=0.05,
         description="Continuously-compounded risk-free rate (default 0.05)",
+    )
+    n_paths: int | None = Field(
+        default=None,
+        ge=MIN_N_PATHS,
+        le=MAX_N_PATHS,
+        description=(
+            f"Monte-Carlo path count (default: {MC_N_PATHS:,}). "
+            f"Bounded by [{MIN_N_PATHS:,}, {MAX_N_PATHS:,}]."
+        ),
+    )
+    force_engine: Literal["auto", "python"] = Field(
+        default="auto",
+        description=(
+            "Engine selection override. 'auto' = C++ if available else Python; "
+            "'python' = always force the pure-Python pricer."
+        ),
     )
 
     @field_validator("ticker")
@@ -133,6 +165,7 @@ def _price_with_cpp(
     T: float,
     r: float,
     sigma: float,
+    n_paths: int,
 ) -> tuple[float, float]:
     """Run the C++ Monte Carlo engine; return ``(call_price, put_price)``.
 
@@ -143,7 +176,7 @@ def _price_with_cpp(
     cpp = quant_engine_cpp  # type: ignore[assignment]
     pricer = cpp.MonteCarloPricerCpp(  # type: ignore[attr-defined]
         S, K, T, r, sigma,
-        MC_N_PATHS, MC_N_STEPS, "call",
+        n_paths, MC_N_STEPS, "call",
         MC_SEED, MC_ANTITHETIC, MC_CPP_THREADS,
     )
     call_price, put_price = pricer.price_both()
@@ -156,11 +189,12 @@ def _price_with_python(
     T: float,
     r: float,
     sigma: float,
+    n_paths: int,
 ) -> tuple[float, float]:
     """Run the pure-Python :class:`MonteCarloPricer`; return ``(call, put)``."""
     pricer = MonteCarloPricer(
         S=S, K=K, T=T, r=r, sigma=sigma,
-        n_paths=MC_N_PATHS,
+        n_paths=n_paths,
         n_steps=MC_N_STEPS,
         seed=MC_SEED,
         antithetic=MC_ANTITHETIC,
@@ -172,23 +206,39 @@ def _price_with_python(
 
 def _price_with_fallback(
     S: float, K: float, T: float, r: float, sigma: float,
+    n_paths: int = MC_N_PATHS,
+    force_engine: Literal["auto", "python"] = "auto",
 ) -> tuple[float, float, Literal["C++", "Python"]]:
     """Try the C++ engine first, fall back to Python on any error.
+
+    Parameters
+    ----------
+    S, K, T, r, sigma
+        Standard BSM inputs.
+    n_paths
+        Number of Monte-Carlo paths to simulate for *both* engines.
+    force_engine
+        ``"auto"`` (the default) selects the C++ engine when it is
+        available and falls back to Python on any failure. ``"python"``
+        forces the pure-Python path even if the C++ engine is loaded
+        — used by the Streamlit dashboard to get a fair C++ vs Python
+        timing comparison on the same inputs.
 
     Returns
     -------
     tuple[float, float, Literal["C++", "Python"]]
         ``(call_price, put_price, engine_used)``.
     """
-    if HAS_CPP:
+    use_cpp: bool = HAS_CPP and (force_engine != "python")
+    if use_cpp:
         try:
-            call, put = _price_with_cpp(S, K, T, r, sigma)
+            call, put = _price_with_cpp(S, K, T, r, sigma, n_paths)
             return call, put, "C++"
         except Exception:
             # Any failure in the C++ path (ImportError, AttributeError,
             # a segfault caught by pybind11, etc.) → fall back to Python.
             pass
-    call, put = _price_with_python(S, K, T, r, sigma)
+    call, put = _price_with_python(S, K, T, r, sigma, n_paths)
     return call, put, "Python"
 
 
@@ -260,6 +310,8 @@ def price_option(payload: PricingRequest) -> PricingResponse:
         T=payload.time_to_maturity,
         r=payload.risk_free_rate,
         sigma=sigma,
+        n_paths=payload.n_paths if payload.n_paths is not None else MC_N_PATHS,
+        force_engine=payload.force_engine,
     )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
 

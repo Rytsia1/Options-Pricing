@@ -5,3 +5,8 @@ cpp_core/*.so
 cpp_core/*.dylib
 cpp_core/CMakeCache.txt
 cpp_core/CMakeFiles/
+
+# ----- Docker / compose local overrides -------------------------------------
+# Keep per-developer Docker overrides out of version control.
+docker-compose.override.yml
+.docker/

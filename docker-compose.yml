@@ -1,0 +1,35 @@
+# =============================================================================
+#  Options Pricing Engine — Docker Compose definition
+#
+#  Single-service definition. The C++ `quant_engine_cpp` extension is compiled
+#  during the image build (see `Dockerfile`), so a plain
+#
+#      docker compose up --build
+#
+#  is enough to get a fully self-contained API running on port 8000 — no
+#  MSVC, no CMake, no pybind11 install required on the host.
+# =============================================================================
+
+services:
+  api:
+    # When you change this name, also update it in the "container_name" line
+    # below (and any external tooling that references it).
+    container_name: options-pricing-api
+
+    # Build the image from the Dockerfile in the current directory.
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Bind the container's port 8000 to the host's 8000, so the FastAPI
+    # service is reachable at http://localhost:8000.
+    ports:
+      - "8000:8000"
+
+    # Auto-restart unless you explicitly stopped the container.
+    restart: unless-stopped
+
+    # No volumes: the compiled `quant_engine_cpp*.so` lives inside the
+    # image (in /app/cpp_core), and binding the host source tree on top
+    # would shadow it. If you want live code reload, run uvicorn with
+    # `--reload` outside of Docker instead.

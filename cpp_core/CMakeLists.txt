@@ -33,23 +33,34 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# --- Locate the Python interpreter first ------------------------------------
+# NOTE: find_package(Python3 ...) defines Python3_EXECUTABLE (NOT
+# Python_EXECUTABLE). Using the wrong variable name here silently expands
+# to an empty string, so the pybind11 lookup below would run
+# `-c "import pybind11..."` with no interpreter at all and fail (or, worse,
+# silently resolve to whatever `cmake` finds on PATH instead of the venv/
+# image Python that actually has pybind11 installed).
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+
 # --- Locate pybind11 from the active Python environment --------------------
 # `pybind11.get_cmake_dir()` is the canonical, cross-platform way to find
 # the CMake config files for the pybind11 install in the current venv.
-if(NOT DEFINED Python_EXECUTABLE)
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-endif()
-
 execute_process(
-    COMMAND ${Python_EXECUTABLE} -c "import pybind11, sys; sys.stdout.write(pybind11.get_cmake_dir())"
+    COMMAND ${Python3_EXECUTABLE} -c "import pybind11, sys; sys.stdout.write(pybind11.get_cmake_dir())"
     OUTPUT_VARIABLE pybind11_DIR
     OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _pybind11_lookup_result
 )
+if(NOT _pybind11_lookup_result EQUAL 0 OR pybind11_DIR STREQUAL "")
+    message(FATAL_ERROR
+        "Could not locate pybind11's CMake config directory using "
+        "'${Python3_EXECUTABLE}'. Make sure pybind11 is installed in this "
+        "Python environment (pip install pybind11) before configuring.")
+endif()
 find_package(pybind11 CONFIG REQUIRED)
 
-# --- Threads + Python dev headers (pybind11 needs the latter) ---------------
+# --- Threads (pybind11 needs Python dev headers, already required above) ---
 find_package(Threads REQUIRED)
-find_package(Python3 COMPONENTS Development REQUIRED)
 
 # --- Build the extension module --------------------------------------------
 pybind11_add_module(quant_engine_cpp
@@ -62,11 +73,22 @@ pybind11_add_module(quant_engine_cpp
 target_link_libraries(quant_engine_cpp PRIVATE Python3::Python)
 target_link_libraries(quant_engine_cpp PRIVATE Threads::Threads)
 
-# Sensible warning flags.
+# --- Cross-platform compile options -----------------------------------------
+# Single source of truth for MSVC vs GCC/Clang flags. Note that
+# CMAKE_POSITION_INDEPENDENT_CODE=ON (set above) already covers -fPIC for
+# the project, but we list it explicitly here so the GCC branch is
+# self-documenting and matches the documented contract.
 if(MSVC)
-    target_compile_options(quant_engine_cpp PRIVATE /W4 /permissive-)
+    target_compile_options(quant_engine_cpp PRIVATE /O2 /W4 /permissive-)
 else()
-    target_compile_options(quant_engine_cpp PRIVATE -Wall -Wextra -Wpedantic)
+    # GCC / Clang — this is the path taken inside the Docker image
+    # (g++ on Debian slim) and on macOS.
+    target_compile_options(quant_engine_cpp PRIVATE
+        -O3
+        -fPIC
+        -Wall -Wextra -Wpedantic
+        -Wno-unused-parameter   # pybind11 boilerplate triggers this benignly
+    )
 endif()
 
 # Place the compiled module at the project root of cpp_core/ so a

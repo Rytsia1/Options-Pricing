@@ -1,0 +1,47 @@
+# ----- Local CMake build directory (created when you build on the host) ----
+cpp_core/build/
+cpp_core/CMakeCache.txt
+cpp_core/CMakeFiles/
+
+# ----- Pre-built C++ extension artifacts (host-built .pyd/.so/.dylib) ------
+# We do NOT want to copy a Windows .pyd into a Linux image, or vice versa.
+cpp_core/*.pyd
+cpp_core/*.so
+cpp_core/*.dylib
+
+# ----- Python caches & test artifacts ---------------------------------------
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ----- VCS metadata & IDE config --------------------------------------------
+.git/
+.gitattributes
+.idea/
+.vscode/
+*.swp
+
+# ----- Local virtualenvs (host Python, irrelevant inside the image) ---------
+.venv/
+venv/
+env/
+.python-version
+
+# ----- Logs & misc -----------------------------------------------------------
+*.log
+.DS_Store
+Thumbs.db
+
+# ----- Docker & compose overrides (don't ship the meta-files) --------------
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml
+
+# ----- Tests (not needed at runtime in the image) ---------------------------
+# Uncomment the next line if you want a smaller image; tests are still
+# available on the host.
+# tests/

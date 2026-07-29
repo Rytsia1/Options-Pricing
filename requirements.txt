@@ -8,3 +8,11 @@ pybind11>=2.11
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.5
+
+# Database (SaaS layer)
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+alembic>=1.13
+passlib[bcrypt]>=1.7
+# Pin bcrypt < 4.1 to avoid the well-known passlib 1.7.4 compatibility warning.
+bcrypt<4.1

@@ -12,6 +12,8 @@ Endpoints
                           service is currently configured to use.
 * ``POST /api/v1/price`` — price a European call + put for a real
                           ticker using live market data.
+* ``POST /auth/register``     — create a new user + FREE subscription.
+* ``POST /auth/generate-key`` — issue a fresh API key for an existing user.
 
 Engine selection
 ----------------
@@ -33,6 +35,7 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+from src.api.auth import router as auth_router
 from src.market_data import get_market_inputs
 from src.monte_carlo import MonteCarloPricer
 
@@ -254,6 +257,9 @@ app = FastAPI(
     ),
     version="0.1.0",
 )
+
+# Mount the auth router (register, generate-key).
+app.include_router(auth_router)
 
 
 @app.get("/", tags=["health"])

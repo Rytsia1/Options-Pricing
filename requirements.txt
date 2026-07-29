@@ -7,7 +7,9 @@ pybind11>=2.11
 # Web API
 fastapi>=0.110
 uvicorn[standard]>=0.27
-pydantic>=2.5
+# `pydantic[email]` pulls in the optional email-validator dependency
+# required by Pydantic's `EmailStr` (used in src/schemas/user.py).
+pydantic[email]>=2.5
 
 # Database (SaaS layer)
 SQLAlchemy>=2.0

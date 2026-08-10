@@ -32,10 +32,13 @@ import sys
 import time
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy.orm import Session
 
-from src.api.auth import router as auth_router
+from .auth import router as auth_router
+from .deps import verify_api_key
+from src.database import ApiUsageLog, get_db
 from src.market_data import get_market_inputs
 from src.monte_carlo import MonteCarloPricer
 
@@ -65,7 +68,7 @@ def _try_import_cpp_engine() -> object | None:
     Returns the module on success, or ``None`` if the C++ build is not
     available (no ``cpp_core`` directory, missing MSVC, etc.).
     """
-    cpp_dir = pathlib.Path(__file__).resolve().parent.parent / "cpp_core"
+    cpp_dir = pathlib.Path(__file__).resolve().parent.parent.parent / "cpp_core"
     if not cpp_dir.exists():
         return None
     sys.path.insert(0, str(cpp_dir))
@@ -279,8 +282,16 @@ def root() -> dict[str, str]:
     tags=["pricing"],
     summary="Price a European option for a real ticker",
 )
-def price_option(payload: PricingRequest) -> PricingResponse:
+def price_option(
+    payload: PricingRequest,
+    auth: dict = Depends(verify_api_key),
+    db: Session = Depends(get_db),
+) -> PricingResponse:
     """Fetch live market data and run a Monte Carlo pricing.
+
+    Requires a valid ``X-API-Key`` header. The caller's subscription
+    ``request_limit`` is decremented on each successful call; when it
+    reaches 0 the endpoint returns **429 Too Many Requests**.
 
     Request body
     ------------
@@ -292,6 +303,18 @@ def price_option(payload: PricingRequest) -> PricingResponse:
         Call and put prices, the inputs actually used (spot, vol, etc.),
         wall-clock execution time, and the engine that ran the simulation.
     """
+    subscription = auth["subscription"]
+    api_key = auth["api_key"]
+
+    # ── Rate-limit check ────────────────────────────────────────── #
+    if subscription.request_limit <= 0:
+        raise HTTPException(
+            status_code=429,
+            detail="Request limit exceeded. Upgrade your subscription.",
+        )
+    subscription.request_limit -= 1
+    db.commit()
+
     # 1. Fetch spot + historical vol from yfinance.
     try:
         market = get_market_inputs(payload.ticker)
@@ -320,6 +343,15 @@ def price_option(payload: PricingRequest) -> PricingResponse:
         force_engine=payload.force_engine,
     )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    # ── Usage logging ───────────────────────────────────────────── #
+    usage_log = ApiUsageLog(
+        api_key_id=api_key.id,
+        endpoint="/api/v1/price",
+        execution_time_ms=elapsed_ms,
+    )
+    db.add(usage_log)
+    db.commit()
 
     # 3. Shape the response.
     return PricingResponse(

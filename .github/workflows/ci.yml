@@ -1,0 +1,62 @@
+# =============================================================================
+#  Options Pricing Engine — CI Pipeline
+#
+#  Runs on every push / PR to `main`. Builds the C++ Monte-Carlo extension,
+#  installs Python deps, and executes the full test suite.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test (Python 3.12 + C++ Engine)
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------ #
+      # 1. Checkout
+      # ------------------------------------------------------------------ #
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ------------------------------------------------------------------ #
+      # 2. Python
+      # ------------------------------------------------------------------ #
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ------------------------------------------------------------------ #
+      # 3. System dependencies for C++ compilation
+      # ------------------------------------------------------------------ #
+      - name: Install C++ build tools (cmake, g++, Python headers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential python3-dev
+
+      # ------------------------------------------------------------------ #
+      # 4. Python dependencies
+      # ------------------------------------------------------------------ #
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      # ------------------------------------------------------------------ #
+      # 5. Build the C++ Monte-Carlo engine
+      # ------------------------------------------------------------------ #
+      - name: Compile C++ extension (quant_engine_cpp)
+        run: |
+          cmake -S cpp_core -B cpp_core/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build cpp_core/build --parallel
+
+      # ------------------------------------------------------------------ #
+      # 6. Run the test suite
+      # ------------------------------------------------------------------ #
+      - name: Run tests with pytest
+        run: python -m pytest tests/ -v

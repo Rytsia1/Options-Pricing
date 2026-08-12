@@ -73,21 +73,24 @@ def fetch_history(ticker: str) -> pd.DataFrame:
 
 def post_price(
     payload: dict[str, Any],
+    api_key: str,
     timeout: float = 30.0,
-) -> dict[str, Any]:
-    """POST *payload* to the backend and return the parsed JSON body.
+) -> requests.Response:
+    """POST *payload* to the backend and return the raw :class:`Response`.
+
+    The caller is responsible for inspecting ``resp.status_code`` and
+    handling 401 / 429 / other errors with the appropriate UI feedback.
 
     Raises
     ------
-    requests.HTTPError
-        For any non-2xx response (status + body propagated).
     requests.RequestException
         For connection / timeout errors.
     """
-    headers = {"User-Agent": "options-pricing-dashboard/1.0 (+streamlit)"}
-    resp = requests.post(API_URL, json=payload, headers=headers, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+    headers = {
+        "User-Agent": "options-pricing-dashboard/1.0 (+streamlit)",
+        "X-API-Key": api_key,
+    }
+    return requests.post(API_URL, json=payload, headers=headers, timeout=timeout)
 
 
 def check_backend() -> bool:
@@ -103,6 +106,13 @@ def check_backend() -> bool:
 # Sidebar — user inputs
 # ---------------------------------------------------------------------- #
 with st.sidebar:
+    st.header("🔑 Authentication")
+    api_key = st.text_input(
+        "Enter your API Key",
+        type="password",
+        help="Your API key issued via POST /auth/generate-key.",
+    )
+    st.divider()
     st.header("⚙️ Pricing Inputs")
 
     with st.form("pricing_form", clear_on_submit=False):
@@ -186,6 +196,11 @@ if not submitted:
     st.info("👈 Set your inputs in the sidebar and click **Price Option** to begin.")
     st.stop()
 
+# Guard: API key is required before we hit the backend.
+if not api_key:
+    st.warning("⚠️ Please enter your API Key in the sidebar before pricing.")
+    st.stop()
+
 
 # ---------------------------------------------------------------------- #
 # Build request payload
@@ -208,17 +223,34 @@ payload_py = {**base_payload, "force_engine": "python"}
 # ---------------------------------------------------------------------- #
 # Call the backend (twice — for the C++ vs Python comparison)
 # ---------------------------------------------------------------------- #
-with st.spinner("Pricing on the backend…"):
-    try:
-        cpp_result = post_price(payload_cpp)
-        py_result = post_price(payload_py)
-    except requests.HTTPError as exc:
+def _handle_response(resp: requests.Response, label: str) -> dict[str, Any]:
+    """Inspect *resp* and return parsed JSON, or stop with an error."""
+    if resp.status_code == 200:
+        return resp.json()
+    if resp.status_code == 401:
+        st.error("🔒 Unauthorized: Invalid or revoked API Key.")
+        st.stop()
+    if resp.status_code == 429:
         st.error(
-            f"Backend returned an error (HTTP "
-            f"{exc.response.status_code if exc.response else '?'}): "
-            f"{exc.response.text if exc.response is not None else exc}"
+            "⏳ Rate Limit Exceeded: You have run out of your "
+            "monthly compute quota."
         )
         st.stop()
+    # Fallback for any other non-200 status.
+    st.error(
+        f"Backend error on {label} request "
+        f"(HTTP {resp.status_code}): {resp.text}"
+    )
+    st.stop()
+    return {}  # unreachable; keeps type-checkers happy
+
+
+with st.spinner("Pricing on the backend…"):
+    try:
+        cpp_resp = post_price(payload_cpp, api_key=api_key)
+        cpp_result = _handle_response(cpp_resp, "auto-engine")
+        py_resp = post_price(payload_py, api_key=api_key)
+        py_result = _handle_response(py_resp, "python-forced")
     except requests.RequestException as exc:
         st.error(f"Could not reach the backend at `{API_URL}`.\n\n{exc}")
         st.stop()

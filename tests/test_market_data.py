@@ -27,7 +27,7 @@ def test_constant_daily_log_returns_have_known_annualized_vol() -> None:
         name="Close",
     )
     # The series above has constant 1% log-returns so std == 0.
-    assert historical_volatility(prices) == 0.0
+    assert historical_volatility(prices) == pytest.approx(0.0, abs=1e-12)
 
 
 def test_known_synthetic_series_gives_expected_sigma() -> None:
@@ -37,7 +37,8 @@ def test_known_synthetic_series_gives_expected_sigma() -> None:
     log_rets = rng.normal(loc=0.0, scale=0.01, size=252)
     prices = pd.Series(np.exp(np.cumsum(log_rets)), name="Close")
     sigma = historical_volatility(prices, trading_days=252)
-    assert sigma == pytest.approx(0.01, abs=5e-4)
+    expected_sigma = np.std(log_rets[1:], ddof=1) * math.sqrt(252)
+    assert sigma == pytest.approx(expected_sigma, rel=1e-5)
 
 
 def test_annualization_factor_scales_linearly() -> None:
@@ -80,13 +81,11 @@ def test_invalid_trading_days_raises() -> None:
 # ---------------------------------------------------------------------- #
 def test_nan_prices_are_dropped() -> None:
     """NaN values should be dropped before computing log-returns."""
-    clean = pd.Series(
-        np.exp(np.cumsum([0.01, 0.01, 0.01, 0.01, 0.01])), name="Close",
-    )
-    dirty = clean.copy()
-    dirty.iloc[1] = np.nan       # introduces a NaN in the middle
-    # After dropping NaN, the *remaining* log-returns are still all 0.01
-    # (because the NaN just makes one of the two adjacent return pairs
-    # undefined; the others are unaffected). The standard deviation of a
-    # constant series is 0.
-    assert historical_volatility(dirty) == 0.0
+    # Constant 1% returns
+    clean = pd.Series([100.0, 101.0, 102.01, 103.0301], name="Close")
+    
+    # Same series but with NaNs injected
+    dirty = pd.Series([100.0, np.nan, 101.0, 102.01, np.nan, 103.0301], name="Close")
+    
+    # Dropping NaNs makes `dirty` logically equivalent to `clean`
+    assert historical_volatility(dirty) == pytest.approx(historical_volatility(clean))

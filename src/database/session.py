@@ -45,31 +45,14 @@ from pathlib import Path
 from sqlalchemy import Engine, create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.core.config import settings
 from src.database.models import Base
 
 
 # ---------------------------------------------------------------------- #
 # Engine & session factory
 # ---------------------------------------------------------------------- #
-def _build_database_url() -> str:
-    """Return the active DSN, defaulting to a local SQLite file.
-
-    Honors the ``DATABASE_URL`` env var; otherwise writes a SQLite file
-    at ``<project_root>/options_pricing.db``. The project root is
-    computed from this file's location so the DB lives alongside the
-    app no matter what the CWD is when uvicorn starts.
-    """
-    env_url = os.getenv("DATABASE_URL")
-    if env_url:
-        return env_url
-
-    project_root = Path(__file__).resolve().parents[2]
-    sqlite_path = project_root / "options_pricing.db"
-    # Use forward slashes even on Windows; SQLAlchemy accepts both.
-    return f"sqlite:///{sqlite_path.as_posix()}"
-
-
-DATABASE_URL: str = _build_database_url()
+DATABASE_URL: str = settings.DATABASE_URL
 
 
 def _engine_kwargs(url: str) -> dict[str, object]:

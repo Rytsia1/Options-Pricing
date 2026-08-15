@@ -10,3 +10,17 @@ cpp_core/CMakeFiles/
 # Keep per-developer Docker overrides out of version control.
 docker-compose.override.yml
 .docker/
+
+# ----- Python build artifacts -----------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# ----- Databases ------------------------------------------------------------
+*.db
+*.sqlite3
+
+# ----- IDE Settings ---------------------------------------------------------
+.idea/
+.vscode/
